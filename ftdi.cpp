@@ -43,14 +43,14 @@ bool dr_shift(ftdi_context *ftdi, size_t length_bits, uint8_t out[],
 
   if (length_bits % 8) {
     uint8_t read_dr_bit[256] = {
-        MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG | MPSSE_BITMODE,
+        MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG |
+            MPSSE_BITMODE,
         // length in bits -1
         (length_bits % 8) - 1,
         // data
     };
     read_dr_bit[2] = out[length_bits / 8];
-    if (ftdi_write_data(ftdi, read_dr_bit, 3) !=
-        3) {
+    if (ftdi_write_data(ftdi, read_dr_bit, 3) != 3) {
       printf("error: %s\n", ftdi_get_error_string(ftdi));
       return false;
     }
@@ -70,6 +70,99 @@ bool dr_shift(ftdi_context *ftdi, size_t length_bits, uint8_t out[],
                        // data
                        // 110: From Shift-DR to Run-Test/Idle
                        0x03};
+  if (ftdi_write_data(ftdi, idle, 3) != 3) {
+    printf("error: %s\n", ftdi_get_error_string(ftdi));
+    return false;
+  }
+
+  return true;
+}
+
+bool ir_shift(ftdi_context *ftdi, size_t length_bits, uint8_t out[],
+              uint8_t in[]) {
+  uint8_t shift_ir[256] = {MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE |
+                               MPSSE_WRITE_NEG,
+                           // length in bits -1
+                           0x04,
+                           // data
+                           // 01100: From Run-Test/Idle to Shift-IR
+                           0x06};
+  if (ftdi_write_data(ftdi, shift_ir, 3) != 3) {
+    printf("error: %s\n", ftdi_get_error_string(ftdi));
+    return false;
+  }
+
+  // last bit should be put along with TMS=1
+  length_bits -= 1;
+  size_t length_bytes = length_bits / 8;
+  if (length_bytes > 0) {
+    uint8_t read_ir_byte[256] = {
+        MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG,
+        // length in bytes -1 lo
+        (length_bytes - 1) & 0xff,
+        // length in bytes -1 hi
+        (length_bytes - 1) >> 8,
+        // data
+    };
+    memcpy(&read_ir_byte[3], out, length_bytes);
+    if (ftdi_write_data(ftdi, read_ir_byte, 3 + length_bytes) !=
+        3 + length_bytes) {
+      printf("error: %s\n", ftdi_get_error_string(ftdi));
+      return false;
+    }
+  }
+
+  if (length_bits % 8) {
+    uint8_t read_ir_bit[256] = {
+        MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG |
+            MPSSE_BITMODE,
+        // length in bits -1
+        (length_bits % 8) - 1,
+        // data
+    };
+    read_ir_bit[2] = out[length_bits / 8];
+    if (ftdi_write_data(ftdi, read_ir_bit, 3) != 3) {
+      printf("error: %s\n", ftdi_get_error_string(ftdi));
+      return false;
+    }
+  }
+
+  // recover
+  length_bits += 1;
+
+  uint8_t bit = (out[length_bits / 8] >> ((length_bits - 1) % 8)) & 1;
+  uint8_t idle[256] = {MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE |
+                           MPSSE_WRITE_NEG,
+                       // length in bits -1
+                       0x02,
+                       // data
+                       // 7-th bit: last bit
+                       // 110: From Shift-IR to Run-Test/Idle
+                       0x03 | (bit << 7)};
+  if (ftdi_write_data(ftdi, idle, 3) != 3) {
+    printf("error: %s\n", ftdi_get_error_string(ftdi));
+    return false;
+  }
+
+  int len = (length_bits + 7) / 8;
+  int offset = 0;
+  while (len > offset) {
+    int read = ftdi_read_data(ftdi, &in[offset], len - offset);
+    offset += read;
+  }
+
+  return true;
+}
+
+bool reset(ftdi_context *ftdi) {
+  // Clock Data to TMS pin (no read)
+  uint8_t idle[256] = {MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE |
+                           MPSSE_WRITE_NEG,
+                       // length in bits -1
+                       0x05,
+                       // data
+                       // 111110: Goto Test-Logic-Reset, then Run-Test/Idle
+                       0x1F};
   if (ftdi_write_data(ftdi, idle, 3) != 3) {
     printf("error: %s\n", ftdi_get_error_string(ftdi));
     return false;
@@ -101,24 +194,30 @@ int main() {
     return 1;
   }
 
-  // Clock Data to TMS pin (no read)
-  uint8_t idle[256] = {MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE |
-                           MPSSE_WRITE_NEG,
-                       // length in bits -1
-                       0x05,
-                       // data
-                       // 111110: Goto Test-Logic-Reset, then Run-Test/Idle
-                       0x1F};
-  if (ftdi_write_data(ftdi, idle, 3) != 3) {
-    printf("error: %s\n", ftdi_get_error_string(ftdi));
-    return 1;
+  reset(ftdi);
+
+  if (1) {
+    uint8_t out[256] = {0};
+    uint8_t buf[256] = {0};
+    dr_shift(ftdi, 32, out, buf);
+    uint32_t id = (uint32_t)buf[3] << 24 | (uint32_t)buf[2] << 16 |
+                  (uint32_t)buf[1] << 8 | (uint32_t)buf[0];
+    printf("id: %08X\n", id);
   }
 
-  uint8_t out[256] = {0};
-  uint8_t buf[256] = {0};
-  dr_shift(ftdi, 32, out, buf);
-  uint32_t id = (uint32_t)buf[3] << 24 | (uint32_t)buf[2] << 16 |
-                (uint32_t)buf[1] << 8 | (uint32_t)buf[0];
-  printf("id: %08X\n", id);
+  uint8_t idcode[256] = {0b001001};
+  uint8_t id_out[256] = {0};
+  ir_shift(ftdi, 6, idcode, id_out);
+  printf("id_out: %02X%02X\n", id_out[0], id_out[1]);
+
+  if (1) {
+    uint8_t out[256] = {0xFF};
+    uint8_t buf[256] = {0};
+    dr_shift(ftdi, 32, out, buf);
+    uint32_t id = (uint32_t)buf[3] << 24 | (uint32_t)buf[2] << 16 |
+                  (uint32_t)buf[1] << 8 | (uint32_t)buf[0];
+    printf("id: %08X\n", id);
+  }
+
   return 0;
 }
