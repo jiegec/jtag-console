@@ -73,16 +73,24 @@ impl Device {
     }
 
     pub fn shift_dr(&mut self, output: &BitVec<Local, u8>) -> JTAGResult<BitVec<Local, u8>> {
+        self.shift_xr(true, output)
+    }
+
+    pub fn shift_ir(&mut self, output: &BitVec<Local, u8>) -> JTAGResult<BitVec<Local, u8>> {
+        self.shift_xr(false, output)
+    }
+
+    fn shift_xr(&mut self, dr: bool, output: &BitVec<Local, u8>) -> JTAGResult<BitVec<Local, u8>> {
         let shift = [
             (MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG) as u8,
             0x03,
-            0x02,
+            if dr { 0x02 } else { 0x06 },
         ];
         self.ftdi_write(&shift)?;
 
         let mut temp = output.clone();
-        let mut input = output.clone();
         let last_bit = temp.pop().unwrap();
+        let mut input = temp.clone();
 
         let bits = temp.len();
         let bytes = bits / 8;
@@ -99,15 +107,17 @@ impl Device {
 
         if bits % 8 != 0 {
             let mut shift_bits = vec![
-                (MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG | MPSSE_BITMODE) as u8,
-                ((bits % 8) -1) as _,
+                (MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG | MPSSE_BITMODE)
+                    as u8,
+                ((bits % 8) - 1) as _,
             ];
             shift_bits.push(temp.as_slice()[bytes]);
             self.ftdi_write(&shift_bits)?;
         }
 
+        // last bit is handled here
         let idle = [
-            (MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG) as u8,
+            (MPSSE_WRITE_TMS | MPSSE_DO_READ | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG) as u8,
             0x02,
             0x03 | ((last_bit as u8) << 7),
         ];
@@ -117,7 +127,8 @@ impl Device {
         let mut offset = 0;
         while offset < input_slice.len() {
             let read_bytes = unsafe {
-                ftdi_read_data(self.context, 
+                ftdi_read_data(
+                    self.context,
                     input_slice.as_mut_ptr().add(offset),
                     (input_slice.len() - offset) as _,
                 )
@@ -127,6 +138,21 @@ impl Device {
             }
             offset += read_bytes as usize;
         }
+
+        if bits % 8 != 0 {
+            input_slice[input_slice.len() - 1] >>= 8 - (bits % 8);
+        }
+
+        let mut last_bit_read = [0];
+        unsafe {
+            ftdi_read_data(
+                self.context,
+                last_bit_read.as_mut_ptr(),
+                1,
+            )
+        };
+
+        input.push(last_bit_read[0] != 0);
 
         Ok(input)
     }
