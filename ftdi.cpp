@@ -2,6 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// References:
+// FTDI AN108
+// https://www.ftdichip.com/Support/Documents/AppNotes/AN_108_Command_Processor_for_MPSSE_and_MCU_Host_Bus_Emulation_Modes.pdf
+// MPSSE Example
+// http://developer.intra2net.com/mailarchive/html/libftdi/2010/msg00372.html
+
 int main() {
   struct ftdi_context *ftdi;
   ftdi = ftdi_new();
@@ -26,9 +32,14 @@ int main() {
     return 1;
   }
 
-  unsigned char idle[256] = {MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE |
-                                 MPSSE_WRITE_NEG,
-                             0x05, 0x1F};
+  // Clock Data to TMS pin (no read)
+  unsigned char idle[256] = {
+      MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG,
+      // length in bits -1
+      0x05,
+      // data
+      // 111110: Goto Test-Logic-Reset, then Run-Test/Idle
+      0x1F};
   if (ftdi_write_data(ftdi, idle, 3) != 3) {
     printf("error: %s\n", ftdi_get_error_string(ftdi));
     return 1;
@@ -36,20 +47,25 @@ int main() {
 
   unsigned char shift_dr[256] = {MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE |
                                      MPSSE_WRITE_NEG,
-                                 0x03, 0x02};
+                                 // length in bits -1
+                                 0x03,
+                                 // data
+                                 // 0100: From Run-Test/Idle to Shift-DR
+                                 0x02};
   if (ftdi_write_data(ftdi, shift_dr, 3) != 3) {
     printf("error: %s\n", ftdi_get_error_string(ftdi));
     return 1;
   }
 
+  // Clock Data Bytes In and Out LSB first
   unsigned char read_dr[256] = {MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB |
                                     MPSSE_WRITE_NEG,
+                                // length in bytes -1 low
                                 0x03,
+                                // length in bytes -1 hi
                                 0x00,
-                                0x00,
-                                0x00,
-                                0x00,
-                                0x00};
+                                // data
+                                0x00, 0x00, 0x00, 0x00};
   if (ftdi_write_data(ftdi, read_dr, 7) != 7) {
     printf("error: %s\n", ftdi_get_error_string(ftdi));
     return 1;
