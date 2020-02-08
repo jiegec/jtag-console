@@ -24,7 +24,7 @@ int main() {
   ftdi_set_interface(ftdi, INTERFACE_A);
   ftdi_set_bitmode(ftdi, 0, BITMODE_MPSSE);
 
-  unsigned char setup[256] = {
+  uint8_t setup[256] = {
       SET_BITS_LOW, 0x08,          0x0b, TCK_DIVISOR, 0x01,
       0x00,         SET_BITS_HIGH, 0,    0,           SEND_IMMEDIATE};
   if (ftdi_write_data(ftdi, setup, 10) != 10) {
@@ -33,7 +33,7 @@ int main() {
   }
 
   // Clock Data to TMS pin (no read)
-  unsigned char idle[256] = {
+  uint8_t idle[256] = {
       MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG,
       // length in bits -1
       0x05,
@@ -45,7 +45,7 @@ int main() {
     return 1;
   }
 
-  unsigned char shift_dr[256] = {MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE |
+  uint8_t shift_dr[256] = {MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE |
                                      MPSSE_WRITE_NEG,
                                  // length in bits -1
                                  0x03,
@@ -57,28 +57,34 @@ int main() {
     return 1;
   }
 
-  // Clock Data Bytes In and Out LSB first
-  unsigned char read_dr[256] = {MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB |
-                                    MPSSE_WRITE_NEG,
-                                // length in bytes -1 low
-                                0x03,
-                                // length in bytes -1 hi
-                                0x00,
-                                // data
-                                0x00, 0x00, 0x00, 0x00};
-  if (ftdi_write_data(ftdi, read_dr, 7) != 7) {
-    printf("error: %s\n", ftdi_get_error_string(ftdi));
-    return 1;
-  }
-
-  unsigned char buf[256] = {0};
-  int len = 4;
-  int offset = 0;
-  while (len > offset) {
-    int read = ftdi_read_data(ftdi, &buf[offset], len - offset);
-    offset += read;
-  }
-  printf("id: %02x%02x%02x%02x\n", buf[3], buf[2], buf[1], buf[0]);
+  uint8_t buf[256] = {0};
+  uint32_t id = 0;
+  do {
+    // Clock Data Bytes In and Out LSB first
+    uint8_t read_dr[256] = {MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB |
+                                      MPSSE_WRITE_NEG,
+                                  // length in bytes -1 low
+                                  0x03,
+                                  // length in bytes -1 hi
+                                  0x00,
+                                  // data
+                                  0x00, 0x00, 0x00, 0x00};
+    if (ftdi_write_data(ftdi, read_dr, 7) != 7) {
+      printf("error: %s\n", ftdi_get_error_string(ftdi));
+      return 1;
+    }
+    int len = 4;
+    int offset = 0;
+    while (len > offset) {
+      int read = ftdi_read_data(ftdi, &buf[offset], len - offset);
+      offset += read;
+    }
+    id = (uint32_t)buf[3] << 24 | (uint32_t)buf[2] << 16 |
+         (uint32_t)buf[1] << 8 | (uint32_t)buf[0];
+    if (id != 0) {
+      printf("id: %08X\n", id);
+    }
+  } while (id != 0);
 
   return 0;
 }
