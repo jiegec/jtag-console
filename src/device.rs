@@ -34,6 +34,7 @@ impl Device {
     fn setup_mpsse(&mut self) {
         unsafe {
             ftdi_usb_reset(self.context);
+            ftdi_set_latency_timer(self.context, 10);
             ftdi_set_interface(self.context, ftdi_interface_INTERFACE_A);
             ftdi_set_bitmode(self.context, 0, ftdi_mpsse_mode_BITMODE_MPSSE as _);
         }
@@ -54,7 +55,7 @@ impl Device {
         self.ftdi_write(&setup).expect("setup mpsse");
     }
 
-    fn jtag_reset(&mut self) {
+    pub fn jtag_reset(&mut self) {
         let idle = [
             (MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG) as u8,
             0x05,
@@ -95,14 +96,32 @@ impl Device {
         let bits = temp.len();
         let bytes = bits / 8;
 
+        let input_slice = input.as_mut_slice();
+        let mut offset = 0;
+
         if bytes > 0 {
-            let mut shift_bytes = vec![
-                (MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG) as u8,
-                ((bytes - 1) & 0xff) as _,
-                ((bytes - 1) >> 8) as _,
-            ];
-            shift_bytes.extend(&temp.as_slice()[0..bytes]);
-            self.ftdi_write(&shift_bytes)?;
+            let slice = &temp.as_slice()[0..bytes];
+            for chunk in slice.chunks(1024) {
+                let mut shift_bytes = vec![
+                    (MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG) as u8,
+                    ((chunk.len() - 1) & 0xff) as _,
+                    ((chunk.len() - 1) >> 8) as _,
+                ];
+                shift_bytes.extend(chunk);
+                self.ftdi_write(&shift_bytes)?;
+
+                let read_bytes = unsafe {
+                    ftdi_read_data(
+                        self.context,
+                        input_slice.as_mut_ptr().add(offset),
+                        (input_slice.len() - offset) as _,
+                    )
+                };
+                if read_bytes < 0 {
+                    return Err(self.get_error());
+                }
+                offset += read_bytes as usize;
+            }
         }
 
         if bits % 8 != 0 {
@@ -123,8 +142,6 @@ impl Device {
         ];
         self.ftdi_write(&idle)?;
 
-        let input_slice = input.as_mut_slice();
-        let mut offset = 0;
         while offset < input_slice.len() {
             let read_bytes = unsafe {
                 ftdi_read_data(
@@ -144,13 +161,7 @@ impl Device {
         }
 
         let mut last_bit_read = [0];
-        unsafe {
-            ftdi_read_data(
-                self.context,
-                last_bit_read.as_mut_ptr(),
-                1,
-            )
-        };
+        unsafe { ftdi_read_data(self.context, last_bit_read.as_mut_ptr(), 1) };
 
         input.push(last_bit_read[0] != 0);
 
